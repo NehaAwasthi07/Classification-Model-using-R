@@ -1,0 +1,259 @@
+---
+title: "Classification Project"
+author: "Neha Awasthi"
+date: "2022-12-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this project, we build a classification model to explain how a Portuguese bank can use predictive analytics to help prioritize customers which would subscribe to a bank term deposit.
+
+We start by loading the libraries
+
+```{r}
+options(scipen=999)
+library(tidyverse)
+library(ggplot2)
+library(ggcorrplot)
+library(imbalance)
+library(ROSE)
+library(dplyr)
+```
+
+Step 0 : EDA
+
+```{r}
+# Check for null values
+colSums(is.na(df)) 
+```
+
+Check for initial values in the dataset
+
+```{r}
+head(df)
+```
+Let's see the exact distribution of the output variable
+```{r}
+table(df$y)
+```
+
+```{r}
+imbalanceRatio(df, classAttr = "y")
+```
+
+
+Feature- Engineering:
+Let’s move onto basic feature engineering and categorize ‘job’ into 5 categories and ‘month’ into four quarters. We will also convert our output variable into numerical binary categories to facilitate the classification model.
+
+```{r}
+df<- df %>% mutate(y_num = ifelse(y == "yes",1,0), quarter = ifelse(month %in% c('jan','feb','mar'), 'Q1', ifelse(month %in% c('apr','may','jun'), 'Q2', ifelse(month %in% c('jul','aug','sep'), 'Q3', 'Q4'))), job_category = ifelse(job %in% c('admin', 'management', 'housemaid', 'blue-collar', 'technician', 'services', 'self-employed', 'entrepreneur'), 'Employed', ifelse(job == 'student', 'Student', ifelse(job == 'retired', 'Retired', ifelse(job == 'unemployed', 'Unemployed', 'Unknown')))))
+head(df)
+```
+Let's check the unique values in pdays and change the -1 to a really high value for our ease
+
+```{r}
+unique(df$pdays)
+```
+
+```{r}
+df$pdays[df$pdays == -1] <- 100000
+head(df)
+```
+Let's see the distribution of output variable with numeric output
+```{r}
+hist(df$y_num)
+```
+Let's see the correlation of our numeric data
+```{r}
+cor_df <- cor(df[,sapply(df,is.numeric)])
+cor_mat<-cor(cor_df) # correlation matrix
+cor_mat
+ggcorrplot(cor_mat, method ="square", lab =TRUE)
+```
+
+Step 1: Divide the data into training and test
+
+We first bifurcate the dataset with 0 and 1 values for the output variable. Next, we split both the sets into training and test randomly sampling 70% of both datasets into training and the rest into the test set. Now, we join the training and the test datasets respectively to maintain the integrity of the data
+
+```{r}
+set.seed(42)
+df_yes = df[df$y_num == 1,]
+head(df_yes)
+df_no = df[df$y_num == 0,]
+head(df_no)
+n_yes =dim(df_yes)[1]
+n_no = dim(df_no)[1]
+train_yes = sample(1:n_yes, n_yes*.7, replace = F)
+test_yes = setdiff(1:n_yes, train_yes)
+train_no = sample(1:n_no, n_no*.7, replace = F)
+test_no = setdiff(1:n_no, train_no)
+df_train_yes = df_yes[train_yes,]
+df_test_yes = df_yes[test_yes,]
+df_train_no = df_no[train_no,]
+df_test_no = df_no[test_no,]
+df_train = merge(df_train_yes, df_train_no, all = TRUE)
+df_train= df_train[sample(1:nrow(df_train)), ]
+df_test = merge(df_test_yes, df_test_no, all = TRUE)
+df_test = df_test[sample(1:nrow(df_test)), ]
+table(df_train$y_num)
+table(df_test$y_num)
+```
+Step 2: Build the regression model
+
+Let's start with our initial model on the training set dropping the redundant variables
+
+```{r}
+fit = glm(y_num ~ .  -y - month - day - contact  - job, data= df_train, family = 'binomial')
+summary(fit)
+```
+
+Let's see the relationships between the insignificant variables and the output variable:
+
+```{r}
+plot(df_train$age, df_train$y_num)
+```
+
+```{r}
+plot(df_train$pdays, df_train$y_num)
+```
+
+```{r}
+plot(df_train$previous, df_train$y_num)
+```
+
+```{r}
+ggplot(data = df_train, aes(x= default, y = y_num)) +
+  geom_jitter()
+```
+
+Let's drop the insignificant variables one by one
+
+```{r}
+fit = glm(y_num ~ .  -y - month - day - contact  - job - pdays - default - previous -age, data= df_train, family = 'binomial')
+summary(fit)
+```
+
+# Step 3: Make predictions on test data
+
+```{r}
+test_pred_prob = predict(fit,df_test, type = 'response')
+test_pred = round(test_pred_prob)
+
+train_pred = round(fit$fitted.values)
+```
+
+# Step 4: Create Confusion Matrix
+
+Let's create the error distribution and assess the stability and accuracy of the data
+
+```{r}
+table(df_train$y_num, train_pred)
+table(df_test$y_num, test_pred)
+
+prop.table(table(df_train$y_num, train_pred))
+prop.table(table(df_test$y_num, test_pred))
+```
+As we can see, the training accuracy is 90% and the test accuracy is 89.68%. Looking at the confusion matrix, we can arrive at the conclusion that the model is stable.
+
+As we noticed in the start, this data is imbalanced and while we try to mitigate that with our data splitting, the guess work accuracy of this would have been 88% from the start. 
+
+Oversampling:
+
+Here, we use oversampling for the minority class, and we use ROSE package in R to oversample as our dataset contains categorical independent variables along with continuous independent variables.
+
+```{r}
+set.seed(42)
+df_over <- ovun.sample(y_num ~ ., data = df, method = "over",p = 0.5)$data
+head(df_over)
+table(df_over$y_num)
+```
+Split the data into Training and test sets
+```{r}
+set.seed(42)
+n =dim(df_over)[1]
+train = sample(1:n, n*.70, replace = F)
+test = setdiff(1:n, train)
+df_train = df_over[train,]
+head(df_train)
+df_test = df_over[test,]
+head(df_test)
+```
+Build the model
+```{r}
+fit = glm(y_num ~ .  -y - month - day - contact  - job - pdays - default - previous -age, data= df_train, family = 'binomial')
+summary(fit)
+```
+Make the predictions
+```{r}
+test_pred_prob = predict(fit,df_test, type = 'response')
+test_pred = round(test_pred_prob)
+
+train_pred = round(fit$fitted.values)
+```
+Create Confusion Matrix
+```{r}
+table(df_train$y_num, train_pred)
+table(df_test$y_num, test_pred)
+
+prop.table(table(df_train$y_num, train_pred))
+prop.table(table(df_test$y_num, test_pred))
+```
+As we can see while the model is stable, the test accuracy has dropped to 80.4%.
+
+So for compromise, we took twice the observations in the minority class compared to the initial observations and kept our initial technique of data splitting in train and test. 
+
+```{r}
+set.seed(42)
+df_over <- ovun.sample(y_num ~ ., data = df, method = "over",p = 0.2)$data
+head(df_over)
+table(df_over$y_num)
+```
+Divide the data into training and test
+```{r}
+set.seed(42)
+df_yes = df_over[df_over$y_num == 1,]
+head(df_yes)
+df_no = df_over[df_over$y_num == 0,]
+head(df_no)
+n_yes =dim(df_yes)[1]
+n_no = dim(df_no)[1]
+train_yes = sample(1:n_yes, n_yes*.7, replace = F)
+test_yes = setdiff(1:n_yes, train_yes)
+train_no = sample(1:n_no, n_no*.7, replace = F)
+test_no = setdiff(1:n_no, train_no)
+df_train_yes = df_yes[train_yes,]
+df_test_yes = df_yes[test_yes,]
+df_train_no = df_no[train_no,]
+df_test_no = df_no[test_no,]
+df_train = merge(df_train_yes, df_train_no, all = TRUE)
+df_train= df_train[sample(1:nrow(df_train)), ]
+df_test = merge(df_test_yes, df_test_no, all = TRUE)
+df_test = df_test[sample(1:nrow(df_test)), ]
+table(df_train$y_num)
+table(df_test$y_num)
+```
+Build the model
+```{r}
+fit = glm(y_num ~ .  -y - month - day - contact  - job - pdays - default - previous -age, data= df_train, family = 'binomial')
+summary(fit)
+```
+Make predictions
+```{r}
+test_pred_prob = predict(fit,df_test, type = 'response')
+test_pred = round(test_pred_prob)
+
+train_pred = round(fit$fitted.values)
+```
+Create confusion matrix
+```{r}
+table(df_train$y_num, train_pred)
+table(df_test$y_num, test_pred)
+
+prop.table(table(df_train$y_num, train_pred))
+prop.table(table(df_test$y_num, test_pred))
+```
+
+Again the model is stable and while the accuracy improved from the previous model, it still dropped from the initial model to 85.4%.
